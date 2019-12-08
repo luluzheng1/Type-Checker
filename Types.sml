@@ -4,6 +4,10 @@ exception Type_error
 exception Not_found
 exception Write_toSelf
 exception Unequal_Lengths
+exception Class_notExist
+exception Self_notFound
+exception Id_notFound
+
 type env = (string * typ) list 
 
 fun built_in c =
@@ -42,9 +46,19 @@ fun no_builtin_redef (p:prog):bool =
 	in no_redef (#prog_clss p)
 	end
 
-fun extract_option opt s =
+fun extract_cls_option opt =
     (case opt
-      of NONE     => raise Halt s
+      of NONE     => raise Class_notExist 
+       | (SOME x) => x)
+
+fun extract_self_option opt =
+    (case opt
+      of NONE     => raise Self_notFound
+       | (SOME x) => x)
+
+fun extract_id_option opt =
+    (case opt
+      of NONE     => raise Id_notFound 
        | (SOME x) => x)
 
 fun find_class [] c      = NONE 
@@ -73,7 +87,7 @@ fun meth_type m =
 	end
 
 fun non_built_in (p:prog) (c:string) (m:string):mtyp option =
-	let val cls = extract_option (find_class (#prog_clss p) c) ("Class " ^ c ^ " does not exist in prog1")
+	let val cls = extract_cls_option (find_class (#prog_clss p) c)
 		val meth_list = (#cls_meths cls)
 		
 		fun meth [] m      = NONE
@@ -124,10 +138,10 @@ fun get_meth (p:prog) (c:string) (m:string):mtyp option =
 fun lookup_meth (p:prog) (c:string) (m:string):mtyp =
     (case get_meth p c m
 	  of SOME x => x 
-	   | NONE   => lookup_meth p (#cls_super (extract_option (find_class (#prog_clss p) c) ("Class " ^ c ^ "does not exist in prog"))) m)
+	   | NONE   => lookup_meth p (#cls_super (extract_cls_option (find_class (#prog_clss p) c))) m)
 
-fun get_field (p:prog) (c:string) (f:string):typ option= 
-	let val cls = extract_option (find_class (#prog_clss p) c) ("Class " ^ c ^ "does not exist in prog2")
+fun get_field (p:prog) (c:string) (f:string):typ option = 
+	let val cls = extract_cls_option (find_class (#prog_clss p) c)
 		val field_list = (#cls_fields cls) 
 		
 		fun field [] f      = NONE
@@ -147,7 +161,7 @@ fun lookup_field (p:prog) (c:string) (f:string):typ =
 	  of true  => raise Not_found
 	   | false => (case (get_field p c f)
 	   				of (SOME x) => x
-	    			 | (NONE) => lookup_field p (#cls_super (extract_option (find_class (#prog_clss p) c) ("Class " ^ c ^ "does not exist in prog"))) f))
+	    			 | (NONE) => lookup_field p (#cls_super (extract_cls_option (find_class (#prog_clss p) c))) f))
 
 fun is_subtype (p:prog) (t1:typ) (t2:typ):bool = 
 	let fun stringify (TClass s) = s
@@ -155,15 +169,15 @@ fun is_subtype (p:prog) (t1:typ) (t2:typ):bool =
 		val id2 = stringify t2
 
 		fun class s1 s2 = 
-			let val cls1 = extract_option (find_class (#prog_clss p) s1) ("Class " ^ s1 ^ "does not exist in prog3")
+			let val cls1 = extract_cls_option (find_class (#prog_clss p) s1)
 				val super_s1 = (#cls_super cls1)
 			in 
 				if super_s1 = s2 then true else false
 			end
 
 		fun trans s1 s2 = 
-			let val cls1 = extract_option (find_class (#prog_clss p) s1) ("Class " ^ s1 ^ "does not exist in prog4")
-				val cls2 = extract_option (find_class (#prog_clss p) s2) ("Class " ^ s2 ^ "does not exist in prog5")
+			let val cls1 = extract_cls_option (find_class (#prog_clss p) s1)
+				val cls2 = extract_cls_option (find_class (#prog_clss p) s2)
 			in
 				if s1 = "Object" then
 					false
@@ -191,13 +205,13 @@ fun tc_expr (p:prog) (a:env) ((EInt n):expr):typ = TClass "Integer"
   | tc_expr p a (EString s) = TClass "String"
   | tc_expr p a ESelf = 
    	let val option_var = List.find (fn (str, _) => if str = "self" then true else false) a
-   	 	val (_, t) = extract_option option_var "Self is not bound in A"
+   	 	val (_, t) = extract_self_option option_var
    	in t
    	end
 
   | tc_expr p a (ELocRd s) =
     let val option_var = List.find (fn (str, _) => if str = s then true else false) a
-     	val (str, t) = extract_option option_var "ELocRd: Id is not bound in A"
+     	val (str, t) = extract_id_option option_var
     in t
     end
 
@@ -222,18 +236,19 @@ fun tc_expr (p:prog) (a:env) ((EInt n):expr):typ = TClass "Integer"
    	end
 
   | tc_expr p a (ELocWr (s, e)) = 
-   	let val t1 = tc_expr p a e 
+   	let
+   		val t1 = tc_expr p a e 
    	    val option_var = List.find (fn (str, _) => if str = s then true else false) a
-   	 	val (str, t2) = extract_option option_var "ELocWr:  is not bound in A"
+   	 	val (str, t2) = extract_id_option option_var
    	in 
-   	 	if s = "Self" then 
+   	 	if s = "self" then 
    	 		raise Write_toSelf 
    	 	else if is_subtype p t1 t2 then t2 else raise Type_error
    	end
 
   | tc_expr p a (EFldWr (s,e)) = 
     let val t1 = tc_expr p a e 
-     	val t2 = tc_expr p a (ELocRd s)
+     	val t2 = tc_expr p a (EFldRd s)
     in
      	if is_subtype p t1 t2 then t2 else raise Type_error
     end
@@ -267,7 +282,7 @@ fun tc_meth (p:prog) (s:string) (m:meth):unit =
 			  meth_body   = m_body
 			} = m
 		val self = [("self", TClass s)]
-		val a = m_locals @ m_args @ self
+		val a:env = m_locals @ m_args @ self
 		val t_body = tc_expr p a m_body
 	in if is_subtype p t_body m_ret_type then () else raise Type_error
 	end
@@ -294,21 +309,3 @@ fun tc_prog (p:prog):unit =
 
 	in List.app (fn c => tc_class p c) cls_list
 	end
-
-(*
-fun tc_prog (p:prog):unit = 
-	let val test = if defined_class p "Object" then print "YES1 " else print "NO "
-	    val test2 = if defined_class p "C" then print "YES2 " else print "NO " 
-		val integer = if defined_class p "Integer" then print "YES " else print "NO "
-		val str = if defined_class p "String" then print "YES " else print "NO "
-		val bot = if defined_class p "Bot" then print "YES " else print "NO "
-		val no_builtin = if no_builtin_redef p then print "YES" else print "NO"
-		val subtype = if is_subtype p (TClass "C") (TClass "Object") then print "YES3 " else print "NO "
-		val subtype = if is_subtype p (TClass "Bot") (TClass "C") then print "YES4 " else print "NO "
-		val subtype = if is_subtype p (TClass "C") (TClass "Bot") then print "YES5 " else print "NO "
-		val subtype = if is_subtype p (TClass "Bot") (TClass "Bot") then print "YES6 " else print "NO "
-		val subtype = if is_subtype p (TClass "Truck") (TClass "Car") then print "YES7 " else print "NO "
-		val subtype = if is_subtype p (TClass "Car") (TClass "Object") then print "YES8 " else print "NO "
-		val subtype = if is_subtype p (TClass "Truck") (TClass "Object") then print "YES9 " else print "NO "
-	in ()
-	end*)
